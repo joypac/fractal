@@ -6,6 +6,7 @@
 <title>Fractal Desenhado</title>
 <style>
   :root {
+    color-scheme: dark;
     --bg: #0b0d14;
     --panel: rgba(20, 24, 36, 0.86);
     --line: rgba(255, 255, 255, 0.12);
@@ -21,8 +22,8 @@
     justify-content: center; padding: 8px; background: var(--panel); border: 1px solid var(--line);
     border-radius: 14px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
     max-width: calc(100% - 16px); }
-  #top { top: 8px; }
-  #bottom { bottom: 8px; align-items: center; gap: 10px 14px; }
+  #top { top: calc(8px + env(safe-area-inset-top, 0px)); }
+  #bottom { bottom: calc(8px + env(safe-area-inset-bottom, 0px)); align-items: center; gap: 10px 14px; }
   button { font: inherit; color: var(--text); background: rgba(255,255,255,0.06); border: 1px solid var(--line);
     border-radius: 9px; padding: 7px 11px; cursor: pointer; white-space: nowrap; }
   button:hover { background: rgba(255,255,255,0.12); }
@@ -38,6 +39,10 @@
     color: var(--muted); pointer-events: none; font-size: 16px; transition: opacity .3s; padding: 0 16px; }
   #hint strong { color: var(--text); display: block; font-size: 22px; margin-bottom: 6px; }
   .hidden { display: none !important; }
+  #shot { position: fixed; inset: 0; z-index: 5; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 12px; background: rgba(5, 6, 10, 0.92); padding: 16px; text-align: center; }
+  #shot img { max-width: 100%; max-height: 70%; border-radius: 10px; border: 1px solid var(--line); }
+  #shot p { margin: 0; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -46,6 +51,12 @@
 <div id="hint">
   <strong>Desenha algo pequeno</strong>
   Cada traço vai repetir-se dentro de si mesmo.<br>Depois carrega em «Crescer».
+</div>
+
+<div id="shot" class="hidden">
+  <img id="shotImg" alt="Imagem do fractal">
+  <p>Mantém o dedo na imagem (ou clique direito) para a guardar.</p>
+  <button id="shotClose">Fechar</button>
 </div>
 
 <div class="bar" id="top">
@@ -348,11 +359,10 @@
   $('undo').onclick = () => { strokes.pop(); build(); if (!model) setGrowing(false); updateHint(); dirty = true; };
   $('clear').onclick = () => { strokes.length = 0; build(); setGrowing(false); updateHint(); dirty = true; };
   $('save').onclick = () => {
-    const a = document.createElement('a');
-    a.download = 'fractal.png';
-    a.href = cv.toDataURL('image/png');
-    a.click();
+    $('shotImg').src = cv.toDataURL('image/png');
+    $('shot').classList.remove('hidden');
   };
+  $('shotClose').onclick = () => $('shot').classList.add('hidden');
 
   document.querySelectorAll('#kind button').forEach(b => b.onclick = () => {
     P.kind = b.dataset.k;
