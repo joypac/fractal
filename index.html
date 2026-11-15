@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Fractal Desenhado</title>
+<style>
+  :root {
+    --bg: #0b0d14;
+    --panel: rgba(20, 24, 36, 0.86);
+    --line: rgba(255, 255, 255, 0.12);
+    --text: #e8ebf5;
+    --muted: #8d94ab;
+    --accent: #7cf0c5;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+    font: 14px/1.3 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
+  .bar { position: fixed; left: 50%; transform: translateX(-50%); display: flex; gap: 6px; flex-wrap: wrap;
+    justify-content: center; padding: 8px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 14px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    max-width: calc(100% - 16px); }
+  #top { top: 8px; }
+  #bottom { bottom: 8px; align-items: center; gap: 10px 14px; }
+  button { font: inherit; color: var(--text); background: rgba(255,255,255,0.06); border: 1px solid var(--line);
+    border-radius: 9px; padding: 7px 11px; cursor: pointer; white-space: nowrap; }
+  button:hover { background: rgba(255,255,255,0.12); }
+  button.on { background: var(--accent); color: #062018; border-color: transparent; font-weight: 600; }
+  #grow.on { background: #ffb86b; color: #2a1600; }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; }
+  label { display: flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; }
+  label b { color: var(--text); font-weight: 500; min-width: 34px; display: inline-block; text-align: right;
+    font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 92px; accent-color: var(--accent); }
+  #hint { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); text-align: center;
+    color: var(--muted); pointer-events: none; font-size: 16px; transition: opacity .3s; padding: 0 16px; }
+  #hint strong { color: var(--text); display: block; font-size: 22px; margin-bottom: 6px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="hint">
+  <strong>Desenha algo pequeno</strong>
+  Cada traço vai repetir-se dentro de si mesmo.<br>Depois carrega em «Crescer».
+</div>
+
+<div class="bar" id="top">
+  <button id="grow" title="Crescer infinitamente (espaço)">🌱 Crescer</button>
+  <button id="undo" title="Desfazer (Ctrl+Z)">↶ Desfazer</button>
+  <button id="clear">🗑 Limpar</button>
+  <button id="save">⬇ Guardar</button>
+</div>
+
+<div class="bar" id="bottom">
+  <div class="seg" id="kind">
+    <button data-k="ramos" class="on" title="Cópias nas pontas de cada traço">Ramos</button>
+    <button data-k="tunel" title="Uma cópia dentro da outra, em espiral">Túnel</button>
+    <button data-k="floco" title="Cópias à volta do desenho">Floco</button>
+  </div>
+  <label>Escala <input type="range" id="scale" min="0.3" max="0.88" step="0.01" value="0.62"><b id="scaleV"></b></label>
+  <label>Rotação <input type="range" id="rot" min="-180" max="180" step="1" value="0"><b id="rotV"></b></label>
+  <label id="copiesL" class="hidden">Cópias <input type="range" id="copies" min="2" max="12" step="1" value="6"><b id="copiesV"></b></label>
+  <label>Velocidade <input type="range" id="speed" min="-1.5" max="1.5" step="0.05" value="0.5"><b id="speedV"></b></label>
+  <label><input type="checkbox" id="glow"> Brilho</label>
+</div>
+
+<script>
+(() => {
+  const cv = document.getElementById('c');
+  const ctx = cv.getContext('2d');
+  let W = 0, H = 0, DPR = 1;
+
+  // ---------- estado ----------
+  const strokes = [];          // traços em coordenadas de ecrã: [{x,y}, ...]
+  let cur = null;              // traço a ser desenhado
+  let growing = false;
+  let t = 0;                   // fase do zoom infinito (0..1)
+  let lastTime = 0;
+  let dirty = true;
+  let model = null;
+
+  const P = { kind: 'ramos', scale: 0.62, rot: 0, copies: 6, speed: 0.5, glow: false };
+  const BRUSH = 3;
+  const HUE0 = 160;
+
+  // ---------- utilidades ----------
+  function rdp(pts, eps) {
+    if (pts.length < 3) return pts.slice();
+    const keep = new Uint8Array(pts.length);
+    keep[0] = keep[pts.length - 1] = 1;
+    const stack = [[0, pts.length - 1]];
+    while (stack.length) {
+      const [i0, i1] = stack.pop();
+      const a = pts[i0], b = pts[i1];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const len = Math.hypot(dx, dy) || 1e-9;
+      let best = -1, bi = -1;
+      for (let i = i0 + 1; i < i1; i++) {
+        const p = pts[i];
+        const d = Math.abs((p.x - a.x) * dy - (p.y - a.y) * dx) / len;
+        if (d > best) { best = d; bi = i; }
+      }
+      if (best > eps) { keep[bi] = 1; stack.push([i0, bi], [bi, i1]); }
+    }
+    return pts.filter((_, i) => keep[i]);
+  }
+
+  function toFlat(pts, ax, ay) {
+    if (pts.length === 1) pts = [pts[0], { x: pts[0].x + 0.01, y: pts[0].y }];
+    const f = new Float32Array(pts.length * 2);
+    pts.forEach((p, i) => { f[2 * i] = p.x - ax; f[2 * i + 1] = p.y - ay; });
+    return f;
+  }
+
+  // ---------- modelo do fractal ----------
+  // Cada cópia é uma semelhança complexa: z -> m*z + t  (m codifica escala + rotação)
+  function build() {
+    const all = cur ? strokes.concat([cur]) : strokes;
+    if (!all.length) { model = null; return; }
+    const ax = all[0][0].x, ay = all[0][0].y;   // âncora = início do 1.º traço
+
+    let rM = 1, minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+    for (const s of all) for (const p of s) {
+      const x = p.x - ax, y = p.y - ay;
+      rM = Math.max(rM, Math.hypot(x, y));
+      minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+      minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+    }
+    const fine = all.map(s => toFlat(s === cur ? s : rdp(s, 0.6), ax, ay));
+    const coarse = all.map(s => toFlat(rdp(s, Math.max(1.5, rM * 0.05)), ax, ay));
+    let segs = 0, segsC = 0;
+    fine.forEach(f => segs += f.length / 2 - 1);
+    coarse.forEach(f => segsC += f.length / 2 - 1);
+
+    const s = P.scale, rot = P.rot * Math.PI / 180;
+    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    const maps = [];
+    const add = (ang, tx, ty) => maps.push({ mr: s * Math.cos(ang), mi: s * Math.sin(ang), tr: tx, ti: ty });
+
+    let kind = P.kind;
+    if (kind === 'ramos') {
+      for (const st of all) {
+        if (st.length < 2) continue;
+        const e = st[st.length - 1];
+        let j = st.length - 2;
+        while (j > 0 && Math.hypot(e.x - st[j].x, e.y - st[j].y) < 10) j--;
+        const dx = e.x - st[j].x, dy = e.y - st[j].y;
+        if (Math.hypot(dx, dy) < 2) continue;
+        const ang = Math.atan2(dy, dx) + Math.PI / 2 + rot; // relativo a "para cima"
+        add(ang, e.x - ax, e.y - ay);
+      }
+      if (!maps.length) kind = 'tunel';
+    }
+    if (kind === 'tunel') {
+      // z -> c + m(z - c): roda e encolhe à volta do centro do desenho
+      const mr = s * Math.cos(rot), mi = s * Math.sin(rot);
+      add(rot, cx - (mr * cx - mi * cy), cy - (mi * cx + mr * cy));
+    }
+    if (kind === 'floco') {
+      let rb = 1;
+      for (const st of all) for (const p of st) rb = Math.max(rb, Math.hypot(p.x - ax - cx, p.y - ay - cy));
+      const dist = rb * (1 + s);
+      for (let j = 0; j < P.copies; j++) {
+        const th = 2 * Math.PI * j / P.copies;
+        const ox = cx + dist * Math.sin(th), oy = cy - dist * Math.cos(th);
+        const ang = th + rot;
+        const mr = s * Math.cos(ang), mi = s * Math.sin(ang);
+        add(ang, ox - (mr * cx - mi * cy), oy - (mi * cx + mr * cy));
+      }
+    }
+
+    let dmax = 0;
+    for (const m of maps) dmax = Math.max(dmax, Math.hypot(m.tr, m.ti));
+    const R = Math.max(rM, dmax) / (1 - s) + rM;   // raio que contém todo o fractal
+
+    // ponto fixo da 1.ª cópia: p = t / (1 - m)  -> centro do zoom infinito
+    const m0 = maps[0];
+    const dr = 1 - m0.mr, di = -m0.mi, dd = dr * dr + di * di;
+    const px = (m0.tr * dr + m0.ti * di) / dd, py = (m0.ti * dr - m0.tr * di) / dd;
+
+    model = { ax, ay, fine, coarse, segs, segsC, rM, R, maps, s, px, py,
+      ang0: Math.atan2(m0.mi, m0.mr) };
+  }
+
+  // ---------- desenho do fractal (em largura, maiores primeiro) ----------
+  function renderFractal(rootMr, rootMi, rootTr, rootTi, levelOffset, budget) {
+    const md = model;
+    const { maps, rM, R } = md;
+    const nm = maps.length;
+    let level = [rootMr, rootMi, rootTr, rootTi];
+    let used = 0, d = 0;
+    const margin = 4;
+    while (level.length && d < 80) {
+      const next = [];
+      const path = new Path2D();
+      let sz = 0, any = false;
+      for (let k = 0; k < level.length; k += 4) {
+        const mr = level[k], mi = level[k + 1], tr = level[k + 2], ti = level[k + 3];
+        sz = Math.hypot(mr, mi);
+        const rr = sz * R;
+        if (rr < 0.3) continue;
+        if (tr + rr < -margin || tr - rr > W + margin || ti + rr < -margin || ti - rr > H + margin) continue;
+        const px = sz * rM;
+        if (px > 0.25 && used < budget) {
+          const ss = px < 40 ? md.coarse : md.fine;
+          used += px < 40 ? md.segsC : md.segs;
+          for (const f of ss) {
+            path.moveTo(mr * f[0] - mi * f[1] + tr, mi * f[0] + mr * f[1] + ti);
+            for (let i = 2; i < f.length; i += 2)
+              path.lineTo(mr * f[i] - mi * f[i + 1] + tr, mi * f[i] + mr * f[i + 1] + ti);
+          }
+          any = true;
+        }
+        if (used < budget && next.length < 400000) {
+          for (let j = 0; j < nm; j++) {
+            const m = maps[j];
+            next.push(mr * m.mr - mi * m.mi, mr * m.mi + mi * m.mr,
+                      mr * m.tr - mi * m.ti + tr, mi * m.tr + mr * m.ti + ti);
+          }
+        }
+      }
+      if (any) {
+        const lvl = d - levelOffset;
+        const px = sz * rM;
+        const hue = (HUE0 + lvl * 38) % 360;
+        ctx.strokeStyle = `hsla(${(hue + 360) % 360}, 85%, ${62 + 8 * Math.sin(lvl)}%, ${Math.min(1, px / 8)})`;
+        ctx.lineWidth = Math.min(60, Math.max(0.6, BRUSH * sz));
+        ctx.stroke(path);
+      }
+      level = next;
+      d++;
+    }
+  }
+
+  // ---------- ciclo de desenho ----------
+  function frame(now) {
+    const dt = Math.min(0.05, (now - lastTime) / 1000 || 0);
+    lastTime = now;
+    if (growing && model) {
+      t += dt * P.speed * 0.6;
+      t -= Math.floor(t);   // o fractal é igual a si próprio após um passo: volta ao início sem salto
+      dirty = true;
+    }
+    if (dirty) draw();
+    requestAnimationFrame(frame);
+  }
+
+  function draw() {
+    dirty = false;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = '#0b0d14';
+    ctx.fillRect(0, 0, W, H);
+    if (!model) return;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    if (P.glow) ctx.globalCompositeOperation = 'lighter';
+
+    if (!growing) {
+      // pré-visualização: desenho original no sítio + as suas cópias
+      renderFractal(1, 0, model.ax, model.ay, 0, 90000);
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = BRUSH;
+      const all = cur ? strokes.concat([cur]) : strokes;
+      for (const s of all) {
+        ctx.beginPath();
+        ctx.moveTo(s[0].x, s[0].y);
+        if (s.length === 1) ctx.lineTo(s[0].x + 0.01, s[0].y);
+        for (let i = 1; i < s.length; i++) ctx.lineTo(s[i].x, s[i].y);
+        ctx.stroke();
+      }
+      // âncora
+      ctx.fillStyle = '#7cf0c5';
+      ctx.beginPath(); ctx.arc(model.ax, model.ay, 4, 0, Math.PI * 2); ctx.fill();
+    } else {
+      // zoom infinito em direção ao ponto fixo da 1.ª cópia
+      const { s, ang0, px, py, rM } = model;
+      const diag = Math.hypot(W, H);
+      const K = Math.min(60, Math.max(1, Math.ceil(Math.log(4 * diag / rM) / Math.log(1 / s))));
+      const u = -(t + K);
+      const mag = Math.pow(s, u), ang = ang0 * u;
+      const mr = mag * Math.cos(ang), mi = mag * Math.sin(ang);
+      const cx = W / 2, cy = H / 2;
+      renderFractal(mr, mi, cx - (mr * px - mi * py), cy - (mi * px + mr * py), K + t, 110000);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // ---------- entrada ----------
+  function resize() {
+    DPR = Math.min(2, window.devicePixelRatio || 1);
+    const oldW = W, oldH = H;
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+    if (oldW && strokes.length) {
+      const dx = (W - oldW) / 2, dy = (H - oldH) / 2;
+      for (const s of strokes) for (const p of s) { p.x += dx; p.y += dy; }
+      build();
+    }
+    dirty = true;
+  }
+
+  cv.addEventListener('pointerdown', e => {
+    if (growing) setGrowing(false);
+    cv.setPointerCapture(e.pointerId);
+    cur = [{ x: e.clientX, y: e.clientY }];
+    build(); updateHint(); dirty = true;
+  });
+  cv.addEventListener('pointermove', e => {
+    if (!cur) return;
+    const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+    for (const ev of evs) {
+      const l = cur[cur.length - 1];
+      if (Math.hypot(ev.clientX - l.x, ev.clientY - l.y) >= 2.5) cur.push({ x: ev.clientX, y: ev.clientY });
+    }
+    build(); dirty = true;
+  });
+  const end = () => {
+    if (!cur) return;
+    strokes.push(rdp(cur, 0.6));
+    cur = null;
+    build(); updateHint(); dirty = true;
+  };
+  cv.addEventListener('pointerup', end);
+  cv.addEventListener('pointercancel', end);
+
+  // ---------- controlos ----------
+  const $ = id => document.getElementById(id);
+  const growBtn = $('grow');
+
+  function setGrowing(v) {
+    growing = v && !!model;
+    growBtn.classList.toggle('on', growing);
+    growBtn.textContent = growing ? '✏️ Desenhar' : '🌱 Crescer';
+    if (growing) t = 0;
+    dirty = true;
+  }
+  function updateHint() {
+    $('hint').style.opacity = strokes.length || cur ? 0 : 1;
+  }
+
+  growBtn.onclick = () => setGrowing(!growing);
+  $('undo').onclick = () => { strokes.pop(); build(); if (!model) setGrowing(false); updateHint(); dirty = true; };
+  $('clear').onclick = () => { strokes.length = 0; build(); setGrowing(false); updateHint(); dirty = true; };
+  $('save').onclick = () => {
+    const a = document.createElement('a');
+    a.download = 'fractal.png';
+    a.href = cv.toDataURL('image/png');
+    a.click();
+  };
+
+  document.querySelectorAll('#kind button').forEach(b => b.onclick = () => {
+    P.kind = b.dataset.k;
+    document.querySelectorAll('#kind button').forEach(x => x.classList.toggle('on', x === b));
+    $('copiesL').classList.toggle('hidden', P.kind !== 'floco');
+    build(); dirty = true;
+  });
+
+  const sliders = {
+    scale: v => v.toFixed(2),
+    rot: v => Math.round(v) + '°',
+    copies: v => String(v),
+    speed: v => v.toFixed(2),
+  };
+  for (const [id, fmt] of Object.entries(sliders)) {
+    const el = $(id), out = $(id + 'V');
+    const upd = () => { P[id] = parseFloat(el.value); out.textContent = fmt(P[id]); build(); dirty = true; };
+    el.addEventListener('input', upd);
+    upd();
+  }
+  $('glow').onchange = e => { P.glow = e.target.checked; dirty = true; };
+
+  window.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'z') { $('undo').click(); e.preventDefault(); }
+    else if (e.key === ' ') { growBtn.click(); e.preventDefault(); }
+  });
+
+  window.addEventListener('resize', resize);
+  resize();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
